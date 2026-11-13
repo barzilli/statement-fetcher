@@ -17,7 +17,7 @@ Last updated: November 13, 2026
 
 ## How it works
 
-1. **Connector (one per provider).** A Playwright browser script that opens the
+1. **Connector (one per provider).** A headless Playwright browser script that opens the
    provider's billing page using a saved browser profile, finds bill PDF links,
    and downloads any not already filed.
 2. **Filing (`filing.py`).** Checks the file is really a PDF, names it, and saves:
@@ -31,17 +31,28 @@ Last updated: November 13, 2026
 
 ## Key decisions
 
-- **No stored passwords.** The user signs in once with `--login` in a visible
-  browser and ticks "remember this device". Later runs reuse that session.
-  Exit code 2 means it expired: run `--login` again.
+- **Terminal-only sign-in.** Every setup and sign-in step runs from a
+  terminal, including over SSH or on a headless server.
+- **No stored passwords.** `att_fiber.py --login` asks for the AT&T user ID,
+  password (hidden prompt) and verification code in the terminal, types them into
+  a headless browser, and ticks "remember this device". The password is never
+  written to disk; only AT&T's session cookie is kept in the profile. Later runs
+  reuse that session. Exit code 2 means it expired: run `--login` again. If the
+  login page isn't recognised, it saves `att_debug/login.png` and `login.html`.
 - **Selectors match on visible text** ("bill history", "View PDF", "Download")
   rather than page code, to survive minor site changes. If AT&T redesigns,
-  run `--headed --debug` and use the saved screenshot/HTML to update the
+  run `--debug` and use the saved screenshot/HTML to update the
   patterns near the top of `att_fiber.py`.
 - **Drive uses the `drive.file` permission**, so the scripts can only see files
-  they created, not the rest of Drive. Setup needs a Google Cloud project and a
-  Desktop OAuth client (steps in `README.md`). Publish the consent screen to avoid
-  the 7-day sign-in expiry of testing mode.
+  they created, not the rest of Drive. Setup needs a Google Cloud project and an
+  OAuth client of type "TVs and Limited Input devices" (steps in `README.md`).
+  `gdrive.py --auth` uses Google's device-code flow: it prints a code, the user
+  approves on any phone or computer, and the token is saved. Google allows
+  `drive.file` with this flow (the device flow only supports a short list of
+  scopes; full `drive` access isn't one of them, which is fine here). Publish the
+  consent screen to avoid the 7-day sign-in expiry of testing mode. A service
+  account was ruled out: it has no Drive storage of its own and can't upload to a
+  personal My Drive.
 - **Simpler Drive alternative:** point `--dest` at a folder synced by Google
   Drive for desktop and skip the Cloud setup.
 - **Run monthly** via cron (example in `README.md`).
@@ -61,8 +72,8 @@ Bills that arrive as email attachments are better fetched from email than scrape
 ## Next steps
 
 1. First real AT&T run: `python att_fiber.py --login`, then
-   `python att_fiber.py --headed --debug`. Share the debug snapshot if no bills
-   are found.
+   `python att_fiber.py --debug`. Share the debug snapshot if no bills are found
+   or if login fails (the login form patterns are untested against the real site).
 2. Set up Drive (`python gdrive.py --auth`) and test `--drive`.
 3. Pick the next providers.
 
@@ -70,6 +81,6 @@ Bills that arrive as email attachments are better fetched from email than scrape
 
 - `att_fiber.py`: AT&T Fiber connector
 - `filing.py`: naming, folder layout, de-duplication, Drive retry tracking
-- `gdrive.py`: Google Drive uploader and `--auth` setup
+- `gdrive.py`: Google Drive uploader and `--auth` setup (device-code flow)
 - `README.md`: install, Drive setup, scheduling, troubleshooting
 - `requirements.txt`: Python dependencies

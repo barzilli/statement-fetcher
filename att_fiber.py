@@ -8,14 +8,16 @@ any bill PDFs not already filed, and files them as:
 
 Usage
 -----
-  First time (opens a visible browser; you sign in and approve any 2FA code):
+  First time (all in the terminal; works over SSH):
       python att_fiber.py --login
+  It asks for your AT&T user ID, your password and the verification code AT&T
+  sends you, and types them into a headless browser.
 
   Every run after that (headless; reuses the saved session):
       python att_fiber.py --dest ~/Documents/Statements
 
-  If AT&T changes its site and nothing is found:
-      python att_fiber.py --headed --debug
+  If AT&T changes its site and nothing is found (saves a screenshot and HTML):
+      python att_fiber.py --debug
 
   Also upload to Google Drive (after a one-time  python gdrive.py --auth):
       python att_fiber.py --dest ~/Documents/Statements --drive
@@ -23,14 +25,17 @@ Usage
 Exit codes: 0 ok, 2 session expired (run --login again), 3 no bills found,
 4 Google Drive not authorized (run  python gdrive.py --auth).
 
-The script never sees or stores your password. You sign in yourself in the
---login browser; AT&T's own "remember this device" cookie is what lets later
-runs work without a code.
+Your password is read with a hidden prompt, passed straight to AT&T's sign-in
+form and never written to disk. AT&T's own "remember this device" cookie, kept
+in the saved profile, is what lets later runs work without a code. If the
+sign-in page can't be recognised, --login saves a screenshot and HTML to
+~/.statement-connectors/state/att_debug/ so the selectors can be updated.
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import re
 import sys
@@ -61,6 +66,13 @@ BILLING_URL = "https://www.att.com/acctmgmt/billing/mybillingcenter"
 
 LOGIN_MARKERS = ("signin", "login", "/auth", "identity")
 BILL_HISTORY_LINK = re.compile(r"bill(ing)? history|past bills|previous bills|view all bills", re.I)
+# Sign-in form patterns (matched on visible labels, like the bill patterns above).
+USER_FIELD = re.compile(r"user ?id|email|username", re.I)
+PASSWORD_FIELD = re.compile(r"password", re.I)
+CODE_FIELD = re.compile(r"(verification|security|one[- ]time|6[- ]digit)?\s*code|passcode", re.I)
+SUBMIT_BUTTON = re.compile(r"^(continue|sign in|log in|next|submit|verify|confirm)$", re.I)
+SEND_CODE_BUTTON = re.compile(r"send( (a|the|my))? code|text me|email me|get code", re.I)
+REMEMBER_DEVICE = re.compile(r"remember|keep me signed in|trust this (device|browser)|don.t ask", re.I)
 PDF_CONTROL = re.compile(r"\bpdf\b|download( bill)?|view (full )?bill|print bill", re.I)
 
 
@@ -68,11 +80,11 @@ def log(msg: str) -> None:
     print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
-def launch(pw, profile: Path, headed: bool) -> BrowserContext:
+def launch(pw, profile: Path) -> BrowserContext:
     profile.mkdir(parents=True, exist_ok=True)
     return pw.chromium.launch_persistent_context(
         user_data_dir=str(profile),
-        headless=not headed,
+        headless=True,
         accept_downloads=True,
         viewport={"width": 1366, "height": 900},
         # A normal desktop UA; headless Chrome's default UA is often blocked.
@@ -90,23 +102,151 @@ def on_login_page(page: Page) -> bool:
 # --------------------------------------------------------------------------
 # Login mode
 # --------------------------------------------------------------------------
-def do_login(profile: Path) -> int:
+def _visible(loc):
+    """First visible element of a locator, or None."""
+    for i in range(min(loc.count(), 10)):
+        el = loc.nth(i)
+        try:
+            if el.is_visible():
+                return el
+        except Exception:
+            pass
+    return None
+
+
+def _field(page: Page, label: re.Pattern, css: str):
+    return (_visible(page.get_by_label(label))
+            or _visible(page.get_by_placeholder(label))
+            or _visible(page.locator(css)))
+
+
+def _submit(page: Page, field=None) -> None:
+    btn = _visible(page.get_by_role("button", name=SUBMIT_BUTTON))
+    if btn:
+        btn.click()
+    elif field is not None:
+        field.press("Enter")
+    try:
+        page.wait_for_load_state("networkidle", timeout=15_000)
+    except PWTimeout:
+        pass
+    page.wait_for_timeout(1500)
+
+
+def _tick_remember(page: Page) -> None:
+    box = _visible(page.get_by_label(REMEMBER_DEVICE))
+    if box is None:
+        box = _visible(page.get_by_role("checkbox", name=REMEMBER_DEVICE))
+    try:
+        if box is not None and not box.is_checked():
+            box.check()
+    except Exception:
+        pass
+
+
+def _page_error(page: Page) -> str:
+    alert = _visible(page.get_by_role("alert"))
+    try:
+        return alert.inner_text().strip() if alert else ""
+    except Exception:
+        return ""
+
+
+def _dump(page: Page, state_dir: Path, tag: str) -> Path:
+    dump = state_dir / "att_debug"
+    dump.mkdir(parents=True, exist_ok=True)
+    (dump / f"{tag}.html").write_text(page.content())
+    page.screenshot(path=str(dump / f"{tag}.png"), full_page=True)
+    return dump
+
+
+def _choose_code_method(page: Page) -> bool:
+    """If AT&T asks where to send the code, list the choices and let the user pick."""
+    send = _visible(page.get_by_role("button", name=SEND_CODE_BUTTON))
+    options = [o for o in (page.get_by_role("radio").nth(i)
+                           for i in range(min(page.get_by_role("radio").count(), 8)))
+               if o.is_visible()]
+    if not send and not options:
+        return False
+    if len(options) > 1:
+        labels = []
+        for o in options:
+            lab = o.evaluate("e => (e.labels && e.labels[0] ? e.labels[0].innerText : '')"
+                             " || e.getAttribute('aria-label') || e.value || ''")
+            labels.append(" ".join(lab.split()) or "(unlabelled option)")
+        print("\nWhere should AT&T send your verification code?")
+        for n, lab in enumerate(labels, 1):
+            print(f"  {n}. {lab}")
+        pick = input(f"Choose 1-{len(labels)} [1]: ").strip() or "1"
+        idx = int(pick) - 1 if pick.isdigit() and 1 <= int(pick) <= len(labels) else 0
+        options[idx].check()
+    elif options:
+        options[0].check()
+    if send:
+        send.click()
+        page.wait_for_timeout(2000)
+    else:
+        _submit(page)
+    return True
+
+
+def do_login(profile: Path, state_dir: Path, user: str | None) -> int:
+    """Sign in from the terminal: credentials and code are typed here, the browser stays headless."""
+    user = user or input("AT&T user ID or email: ").strip()
+    password = getpass.getpass("AT&T password (not saved): ")
+    if not user or not password:
+        log("User ID and password are both needed.")
+        return 2
+    filled = {"user": False, "password": False}
     with sync_playwright() as pw:
-        ctx = launch(pw, profile, headed=True)
+        ctx = launch(pw, profile)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(SIGNIN_URL)
-        print(
-            "\nSign in to AT&T in the browser window.\n"
-            "  • Tick 'Keep me signed in' / 'Remember this device' if offered.\n"
-            "  • Approve any verification code.\n"
-            "  • Once you can see your account overview, come back here.\n"
-        )
-        input("Press Enter when you're signed in… ")
-        page.goto(BILLING_URL)
         page.wait_for_load_state("networkidle")
-        ok = not on_login_page(page)
+        ok = False
+        for _ in range(12):
+            if not on_login_page(page):
+                page.goto(BILLING_URL)
+                page.wait_for_load_state("networkidle")
+                if not on_login_page(page):
+                    ok = True
+                    break
+            err = _page_error(page)
+            if err:
+                log(f"AT&T says: {err}")
+            code = _field(page, CODE_FIELD, "input[autocomplete='one-time-code'], input[name*='code' i]")
+            pw_field = _field(page, PASSWORD_FIELD, "input[type='password']")
+            user_field = _field(page, USER_FIELD, "input[name*='user' i], input[type='email']")
+            if code:
+                _tick_remember(page)
+                value = input("Verification code from AT&T: ").strip()
+                code.fill(value)
+                _submit(page, code)
+            elif pw_field and not (filled["password"] and err):
+                if user_field and not user_field.input_value():
+                    user_field.fill(user)
+                    filled["user"] = True
+                pw_field.fill(password)
+                filled["password"] = True
+                _tick_remember(page)
+                _submit(page, pw_field)
+            elif user_field and not filled["user"]:
+                user_field.fill(user)
+                filled["user"] = True
+                _tick_remember(page)
+                _submit(page, user_field)
+            elif _choose_code_method(page):
+                continue
+            elif err:
+                break   # e.g. wrong password; nothing more to try
+            else:
+                page.wait_for_timeout(3000)  # page still loading or redirecting
+        if not ok:
+            dump = _dump(page, state_dir, "login")
+            log(f"Couldn't finish signing in. Screenshot and HTML saved to {dump}")
         ctx.close()
-    log("Session saved." if ok else "Still on a sign-in page; try --login again.")
+    password = None
+    log("Signed in; session saved." if ok else "Sign-in did not complete; try --login again.")
     return 0 if ok else 2
 
 
@@ -181,7 +321,7 @@ def make_drive(root_name: str):
         return None
 
 
-def fetch(dest: Path, profile: Path, state_dir: Path, headed: bool,
+def fetch(dest: Path, profile: Path, state_dir: Path,
           max_bills: int, debug: bool, drive_root: str | None = None) -> int:
     drive = make_drive(drive_root) if drive_root else None
     if drive_root and not drive:
@@ -190,7 +330,7 @@ def fetch(dest: Path, profile: Path, state_dir: Path, headed: bool,
     filed, skipped, failed = [], 0, 0
 
     with sync_playwright() as pw, tempfile.TemporaryDirectory() as tmp:
-        ctx = launch(pw, profile, headed)
+        ctx = launch(pw, profile)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             open_bill_history(page)
@@ -209,7 +349,7 @@ def fetch(dest: Path, profile: Path, state_dir: Path, headed: bool,
             log(f"Debug snapshot saved to {dump}")
         if not controls:
             ctx.close()
-            log("No bill PDF links found. AT&T may have changed the page; run with --headed --debug.")
+            log("No bill PDF links found. AT&T may have changed the page; run with --debug.")
             return 3
 
         for control, row_text in controls[:max_bills]:
@@ -245,12 +385,13 @@ class SessionExpired(Exception):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--login", action="store_true", help="open a browser to sign in and save the session")
+    ap.add_argument("--login", action="store_true",
+                    help="sign in from the terminal (headless) and save the session")
+    ap.add_argument("--user", help="AT&T user ID for --login (prompted if omitted)")
     ap.add_argument("--dest", type=Path, default=Path.home() / "Documents" / "Statements",
                     help="archive root (default: ~/Documents/Statements)")
     ap.add_argument("--profile", type=Path, default=DEFAULT_PROFILE, help="saved browser profile folder")
     ap.add_argument("--state", type=Path, default=DEFAULT_STATE, help="where 'already filed' records live")
-    ap.add_argument("--headed", action="store_true", help="show the browser while fetching")
     ap.add_argument("--max-bills", type=int, default=24, help="most bills to consider per run")
     ap.add_argument("--debug", action="store_true", help="save a screenshot and HTML of the bill page")
     ap.add_argument("--drive", nargs="?", const="Statements", metavar="FOLDER",
@@ -258,8 +399,8 @@ def main() -> int:
     a = ap.parse_args()
 
     if a.login:
-        return do_login(a.profile)
-    return fetch(a.dest, a.profile, a.state, a.headed, a.max_bills, a.debug, a.drive)
+        return do_login(a.profile, a.state, a.user)
+    return fetch(a.dest, a.profile, a.state, a.max_bills, a.debug, a.drive)
 
 
 if __name__ == "__main__":
