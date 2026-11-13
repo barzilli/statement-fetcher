@@ -31,7 +31,7 @@ Last updated: November 13, 2026
 
 ## Key decisions
 
-- **No sign-in step needs a graphical web browser.** Everything runs from a
+- **Terminal-only sign-in.** Every setup and sign-in step runs from a
   terminal, including over SSH or on a headless server.
 - **No stored passwords.** `att_fiber.py --login` asks for the AT&T user ID,
   password (hidden prompt) and verification code in the terminal, types them into
@@ -41,7 +41,7 @@ Last updated: November 13, 2026
   login page isn't recognised, it saves `att_debug/login.png` and `login.html`.
 - **Selectors match on visible text** ("bill history", "View PDF", "Download")
   rather than page code, to survive minor site changes. If AT&T redesigns,
-  run `--headed --debug` and use the saved screenshot/HTML to update the
+  run `--debug` and use the saved screenshot/HTML to update the
   patterns near the top of `att_fiber.py`.
 - **Drive uses the `drive.file` permission**, so the scripts can only see files
   they created, not the rest of Drive. Setup needs a Google Cloud project and an

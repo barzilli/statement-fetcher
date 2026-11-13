@@ -9,8 +9,7 @@ and folders they created themselves, not the rest of your Drive.
 
 One-time setup:  python gdrive.py --auth
 It prints a short code and a URL. Open the URL on any phone or computer, enter
-the code and approve. Nothing on this machine needs a web browser, so it works
-over SSH or on a headless server (Google's "limited-input device" flow, which
+the code and approve. It works over SSH or on a headless server (Google's "limited-input device" flow, which
 supports the drive.file scope).
 """
 
@@ -66,7 +65,7 @@ def _client_info() -> tuple[str, str]:
 
 
 def device_flow() -> Credentials:
-    """Authorize with a code typed on any other device; no browser needed here."""
+    """Authorize with a code entered on any other device."""
     client_id, client_secret = _client_info()
     r = requests.post(DEVICE_CODE_URL, data={"client_id": client_id, "scope": " ".join(SCOPES)},
                       timeout=30)

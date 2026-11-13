@@ -8,7 +8,7 @@ any bill PDFs not already filed, and files them as:
 
 Usage
 -----
-  First time (all in the terminal; no visible browser needed, works over SSH):
+  First time (all in the terminal; works over SSH):
       python att_fiber.py --login
   It asks for your AT&T user ID, your password and the verification code AT&T
   sends you, and types them into a headless browser.
@@ -80,11 +80,11 @@ def log(msg: str) -> None:
     print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
-def launch(pw, profile: Path, headed: bool) -> BrowserContext:
+def launch(pw, profile: Path) -> BrowserContext:
     profile.mkdir(parents=True, exist_ok=True)
     return pw.chromium.launch_persistent_context(
         user_data_dir=str(profile),
-        headless=not headed,
+        headless=True,
         accept_downloads=True,
         viewport={"width": 1366, "height": 900},
         # A normal desktop UA; headless Chrome's default UA is often blocked.
@@ -190,7 +190,7 @@ def _choose_code_method(page: Page) -> bool:
     return True
 
 
-def do_login(profile: Path, state_dir: Path, user: str | None, headed: bool) -> int:
+def do_login(profile: Path, state_dir: Path, user: str | None) -> int:
     """Sign in from the terminal: credentials and code are typed here, the browser stays headless."""
     user = user or input("AT&T user ID or email: ").strip()
     password = getpass.getpass("AT&T password (not saved): ")
@@ -199,7 +199,7 @@ def do_login(profile: Path, state_dir: Path, user: str | None, headed: bool) -> 
         return 2
     filled = {"user": False, "password": False}
     with sync_playwright() as pw:
-        ctx = launch(pw, profile, headed=headed)
+        ctx = launch(pw, profile)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(SIGNIN_URL)
         page.wait_for_load_state("networkidle")
@@ -321,7 +321,7 @@ def make_drive(root_name: str):
         return None
 
 
-def fetch(dest: Path, profile: Path, state_dir: Path, headed: bool,
+def fetch(dest: Path, profile: Path, state_dir: Path,
           max_bills: int, debug: bool, drive_root: str | None = None) -> int:
     drive = make_drive(drive_root) if drive_root else None
     if drive_root and not drive:
@@ -330,7 +330,7 @@ def fetch(dest: Path, profile: Path, state_dir: Path, headed: bool,
     filed, skipped, failed = [], 0, 0
 
     with sync_playwright() as pw, tempfile.TemporaryDirectory() as tmp:
-        ctx = launch(pw, profile, headed)
+        ctx = launch(pw, profile)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             open_bill_history(page)
@@ -392,7 +392,6 @@ def main() -> int:
                     help="archive root (default: ~/Documents/Statements)")
     ap.add_argument("--profile", type=Path, default=DEFAULT_PROFILE, help="saved browser profile folder")
     ap.add_argument("--state", type=Path, default=DEFAULT_STATE, help="where 'already filed' records live")
-    ap.add_argument("--headed", action="store_true", help="show the browser window (optional, for troubleshooting only)")
     ap.add_argument("--max-bills", type=int, default=24, help="most bills to consider per run")
     ap.add_argument("--debug", action="store_true", help="save a screenshot and HTML of the bill page")
     ap.add_argument("--drive", nargs="?", const="Statements", metavar="FOLDER",
@@ -400,8 +399,8 @@ def main() -> int:
     a = ap.parse_args()
 
     if a.login:
-        return do_login(a.profile, a.state, a.user, a.headed)
-    return fetch(a.dest, a.profile, a.state, a.headed, a.max_bills, a.debug, a.drive)
+        return do_login(a.profile, a.state, a.user)
+    return fetch(a.dest, a.profile, a.state, a.max_bills, a.debug, a.drive)
 
 
 if __name__ == "__main__":

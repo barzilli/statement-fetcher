@@ -9,9 +9,7 @@ pip install -r requirements.txt
 playwright install chromium        # on a bare Linux server: playwright install --with-deps chromium
 ```
 
-Every step below works from a terminal alone (including over SSH or on a headless server).
-Nothing needs a graphical web browser on this machine. The only time you look at a web page
-is approving Google Drive access, and you can do that on your phone.
+Every step below works from a terminal alone, including over SSH or on a headless server.
 
 Keep `att_fiber.py`, `filing.py` and `gdrive.py` in the same folder.
 
@@ -31,7 +29,7 @@ they created, not the rest of your Drive.
    (An older *Desktop app* client won't work with this flow; create a new one of this type.)
 5. Run `python gdrive.py --auth`. It prints a URL (`google.com/device`) and a short code.
    Open that URL on any phone or computer, enter the code, sign in and approve. The script
-   notices the approval by itself and saves the token; no browser is opened here.
+   notices the approval by itself and saves the token.
 
 Steps 1 to 4 are a one-time setup in the Cloud Console and can be done from any device.
 
@@ -71,5 +69,4 @@ folder inside your synced Drive instead and skip all of the above.
 | 4 | Google Drive not authorized or sign-in expired | Run `python gdrive.py --auth` |
 
 The debug snapshots are what's needed to update the page patterns (near the top of
-`att_fiber.py`) if AT&T redesigns its site. `--headed` still exists for troubleshooting on a
-machine with a screen, but no step needs it.
+`att_fiber.py`) if AT&T redesigns its site.
