@@ -1,0 +1,36 @@
+# Google OAuth: client secrets and saved tokens
+google-client.json
+google-token.json
+client_secret*.json
+credentials*.json
+token*.json
+*.pickle
+
+# Local runtime data (default lives in ~/.statement-connectors/, but never commit a local copy)
+.statement-connectors/
+profiles/
+state/
+att_debug/
+*_debug/
+*.log
+
+# Downloaded statements and debug snapshots
+*.pdf
+*.png
+page.html
+Statements/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
